@@ -9,6 +9,10 @@ import { STATUS_LABEL, STATUS_ORDER, type TaskStatus } from '../lib/labels.ts'
 
 type Filter = TaskStatus | 'all'
 
+/** Счётчик показываем, только когда данные загружены: «(0)» при ошибке вводил бы в заблуждение. */
+const withCount = (label: string, count: number | undefined) =>
+  count === undefined ? label : `${label} (${count})`
+
 /** «Мои задачи» у исполнителя, «Все задачи» у постановщика. Фильтр по статусу хранится в URL. */
 export function TasksPage() {
   const { isManager } = useAuth()
@@ -40,23 +44,25 @@ export function TasksPage() {
           value={filter}
           onChange={setFilter}
           options={[
-            { value: 'all', label: `Все (${tasks.data?.length ?? 0})` },
+            { value: 'all', label: withCount('Все', tasks.data?.length) },
             ...STATUS_ORDER.map((status) => ({
               value: status,
-              label: `${STATUS_LABEL[status]} (${counts.get(status) ?? 0})`,
+              label: withCount(STATUS_LABEL[status], tasks.data && (counts.get(status) ?? 0)),
             })),
           ]}
         />
       </div>
 
-      {tasks.error && <QueryError error={tasks.error} onRetry={() => void tasks.refetch()} />}
-
-      <TaskTable
-        tasks={visible}
-        loading={tasks.isPending}
-        showAssignee={isManager}
-        emptyText={filter === 'all' ? 'Задач пока нет' : 'Нет задач в этом статусе'}
-      />
+      {tasks.error ? (
+        <QueryError error={tasks.error} onRetry={() => void tasks.refetch()} />
+      ) : (
+        <TaskTable
+          tasks={visible}
+          loading={tasks.isPending}
+          showAssignee={isManager}
+          emptyText={filter === 'all' ? 'Задач пока нет' : 'Нет задач в этом статусе'}
+        />
+      )}
     </>
   )
 }

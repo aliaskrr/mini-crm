@@ -6,9 +6,10 @@ import { useInvalidateAll } from './invalidate.ts'
 const TASK_LIST_COLUMNS =
   'id, title, status, created_at, object:objects(id, name), assignee:profiles!tasks_assignee_id_fkey(id, full_name)' as const
 
-export function useTasks(filter: { objectId?: string; assigneeId?: string } = {}) {
+export function useTasks(filter: { objectId?: string; assigneeId?: string } = {}, enabled = true) {
   return useQuery({
     queryKey: ['tasks', 'list', filter],
+    enabled,
     queryFn: async () => {
       let query = supabase.from('tasks').select(TASK_LIST_COLUMNS).order('created_at', { ascending: false })
       if (filter.objectId) query = query.eq('object_id', filter.objectId)
@@ -22,28 +23,39 @@ export function useTasks(filter: { objectId?: string; assigneeId?: string } = {}
 
 export type TaskListItem = NonNullable<ReturnType<typeof useTasks>['data']>[number]
 
+/**
+ * Карточка задачи вместе со списком действий, доступных текущему пользователю.
+ * Какие кнопки показать, решает база (get_available_transitions), а не интерфейс.
+ * Задача и действия кэшируются одной записью, поэтому статус и кнопки на экране
+ * всегда из одного ответа и не могут разойтись.
+ */
 export function useTask(taskId: string | undefined) {
   return useQuery({
     queryKey: ['tasks', 'detail', taskId],
     enabled: Boolean(taskId),
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('tasks')
-        .select(
-          `id, title, description, status, created_at, object_id, assignee_id,
-           object:objects(id, name, address),
-           assignee:profiles!tasks_assignee_id_fkey(id, full_name),
-           author:profiles!tasks_author_id_fkey(id, full_name)`,
-        )
-        .eq('id', taskId!)
-        .maybeSingle()
-      if (error) throw error
-      return data
+      const [task, transitions] = await Promise.all([
+        supabase
+          .from('tasks')
+          .select(
+            `id, title, description, status, created_at, object_id, assignee_id,
+             object:objects(id, name, address),
+             assignee:profiles!tasks_assignee_id_fkey(id, full_name),
+             author:profiles!tasks_author_id_fkey(id, full_name)`,
+          )
+          .eq('id', taskId!)
+          .maybeSingle(),
+        supabase.rpc('get_available_transitions', { p_task_id: taskId! }),
+      ])
+      if (task.error) throw task.error
+      if (transitions.error) throw transitions.error
+      return task.data ? { ...task.data, transitions: transitions.data } : null
     },
   })
 }
 
 export type TaskDetails = NonNullable<ReturnType<typeof useTask>['data']>
+export type Transition = TaskDetails['transitions'][number]
 
 export type HistoryEntry = {
   id: number
@@ -72,18 +84,6 @@ export function useTaskHistory(taskId: string) {
   })
 }
 
-/** Какие кнопки показать: решает база (get_available_transitions), а не интерфейс. */
-export function useAvailableTransitions(taskId: string, currentStatus: TaskStatus) {
-  return useQuery({
-    queryKey: ['task-transitions', taskId, currentStatus],
-    queryFn: async () => {
-      const { data, error } = await supabase.rpc('get_available_transitions', { p_task_id: taskId })
-      if (error) throw error
-      return data
-    },
-  })
-}
-
 export function useChangeTaskStatus() {
   const invalidateAll = useInvalidateAll()
   return useMutation({
@@ -96,7 +96,8 @@ export function useChangeTaskStatus() {
       if (error) throw error
       return data
     },
-    onSettled: invalidateAll,
+    // И после ошибки: например, если статус тем временем сменил другой сотрудник.
+    onSettled: () => invalidateAll(),
   })
 }
 
@@ -118,7 +119,7 @@ export function useSaveTask() {
       if (error) throw error
       return data
     },
-    onSuccess: invalidateAll,
+    onSettled: () => invalidateAll(),
   })
 }
 
@@ -129,6 +130,6 @@ export function useDeleteTask() {
       const { error } = await supabase.rpc('delete_task', { p_task_id: taskId })
       if (error) throw error
     },
-    onSuccess: invalidateAll,
+    onSuccess: (_data, taskId) => invalidateAll({ except: taskId }),
   })
 }

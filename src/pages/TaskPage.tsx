@@ -14,16 +14,20 @@ import { TaskFormModal } from '../components/TaskFormModal.tsx'
 import { TaskHistory } from '../components/TaskHistory.tsx'
 import { errorMessage } from '../lib/errors.ts'
 import { formatDateTime } from '../lib/format.ts'
+import { isUuid } from '../lib/text.ts'
 
 export function TaskPage() {
   const { taskId } = useParams()
   const { isManager } = useAuth()
-  const task = useTask(taskId)
+  // Заведомо неверный id из адреса (обрезанная ссылка) в базу не отправляем.
+  const validId = isUuid(taskId) ? taskId : undefined
+  const task = useTask(validId)
   const deleteTask = useDeleteTask()
   const navigate = useNavigate()
   const { message } = App.useApp()
   const [editing, setEditing] = useState(false)
 
+  if (!validId) return <NotFound title="Задача не найдена" subTitle="Проверьте ссылку." />
   if (task.isPending) return <FullPageSpin />
   if (task.error) return <QueryError error={task.error} onRetry={() => void task.refetch()} />
   if (!task.data) {
@@ -86,7 +90,8 @@ export function TaskPage() {
         <Col xs={24} lg={14}>
           <Flex vertical gap={16}>
             <Card title="Действия">
-              <TaskActions task={data} />
+              {/* key: при смене статуса блок действий монтируется заново и закрывает открытый диалог */}
+              <TaskActions key={data.status} task={data} />
             </Card>
             <Card title="Данные задачи">
               <Descriptions

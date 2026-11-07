@@ -1,8 +1,18 @@
 import { LogoutOutlined } from '@ant-design/icons'
-import { Button, Flex, Grid, Layout, Menu, Tag, Typography, theme } from 'antd'
+import { onlineManager } from '@tanstack/react-query'
+import { Alert, Button, Flex, Grid, Layout, Menu, Tag, Typography, theme } from 'antd'
+import { useSyncExternalStore } from 'react'
 import { Link, Outlet, useLocation } from 'react-router'
 import { useAuth, useCurrentProfile } from '../auth/AuthContext.ts'
 import { ROLE_LABEL } from '../lib/labels.ts'
+
+/** Без сети запросы ставятся на паузу и сами продолжатся, когда связь появится — предупреждаем об этом. */
+function useOnline() {
+  return useSyncExternalStore(
+    (onChange) => onlineManager.subscribe(onChange),
+    () => onlineManager.isOnline(),
+  )
+}
 
 export function AppLayout() {
   const { isManager, signOut } = useAuth()
@@ -10,6 +20,7 @@ export function AppLayout() {
   const location = useLocation()
   const screens = Grid.useBreakpoint()
   const { token } = theme.useToken()
+  const online = useOnline()
 
   const selectedKey = location.pathname.startsWith('/tasks') ? 'tasks' : 'objects'
   // На узком экране — короткие подписи, чтобы оба пункта меню помещались без «…».
@@ -71,6 +82,15 @@ export function AppLayout() {
           margin: '0 auto',
         }}
       >
+        {!online && (
+          <Alert
+            type="warning"
+            showIcon
+            title="Нет подключения к интернету"
+            description="Данные загрузятся и обновятся автоматически, когда связь восстановится."
+            style={{ marginBottom: 16 }}
+          />
+        )}
         <Outlet />
       </Layout.Content>
     </Layout>

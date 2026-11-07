@@ -13,6 +13,20 @@ create schema private;
 comment on schema private is 'Внутренние функции и таблицы приложения; через API не публикуется';
 revoke all on schema private from public;
 
+-- Есть ли в тексте хотя бы один видимый символ. Пробелы, переводы строк, неразрывные
+-- и «невидимые» символы Юникода (zero-width space, BOM, word joiner и т. п.) не считаются:
+-- иначе обязательное поле можно «заполнить» пустотой в обход интерфейса.
+-- Символы перечислены явно, поэтому результат не зависит от локали базы.
+create function private.has_visible_text(p_text text)
+returns boolean
+language sql
+immutable
+strict
+set search_path = ''
+as $$
+  select p_text ~ '[^[:space:]\x0085\x00a0\x1680\x180e\x2000-\x200f\x2028-\x202f\x205f-\x2064\x3000\x3164\xfeff\x115f\x1160\xffa0\x2800]';
+$$;
+
 -- -----------------------------------------------------------------------------
 -- Типы
 -- -----------------------------------------------------------------------------
@@ -41,7 +55,7 @@ create type public.task_status as enum (
 -- у пользователей нет прав создавать или менять профили, в том числе свою роль.
 create table public.profiles (
   id         uuid primary key references auth.users (id) on delete cascade,
-  full_name  text not null check (char_length(btrim(full_name)) between 1 and 200),
+  full_name  text not null check (private.has_visible_text(full_name) and char_length(full_name) <= 200),
   role       public.user_role not null,
   created_at timestamptz not null default now()
 );
@@ -50,8 +64,8 @@ comment on table public.profiles is 'Сотрудники и их роли: по
 -- Объект — стройка.
 create table public.objects (
   id         uuid primary key default gen_random_uuid(),
-  name       text not null check (char_length(btrim(name)) between 1 and 200),
-  address    text not null check (char_length(btrim(address)) between 1 and 500),
+  name       text not null check (private.has_visible_text(name) and char_length(name) <= 200),
+  address    text not null check (private.has_visible_text(address) and char_length(address) <= 500),
   created_by uuid not null default auth.uid() references public.profiles (id),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -65,7 +79,7 @@ comment on table public.objects is 'Объекты (стройки)';
 create table public.tasks (
   id          uuid primary key default gen_random_uuid(),
   object_id   uuid not null references public.objects (id),
-  title       text not null check (char_length(btrim(title)) between 1 and 200),
+  title       text not null check (private.has_visible_text(title) and char_length(title) <= 200),
   description text not null default '' check (char_length(description) <= 5000),
   assignee_id uuid not null references public.profiles (id),
   status      public.task_status not null default 'new',
@@ -88,7 +102,8 @@ create table public.task_status_history (
   from_status public.task_status,  -- null — запись о создании задачи
   to_status   public.task_status not null,
   changed_by  uuid not null references public.profiles (id),
-  comment     text check (char_length(comment) between 1 and 2000),
+  -- Комментарий либо отсутствует (null), либо содержит видимый текст.
+  comment     text check (comment is null or (private.has_visible_text(comment) and char_length(comment) <= 2000)),
   created_at  timestamptz not null default now()
 );
 comment on table public.task_status_history is 'История статусов задач: кто, когда, откуда, куда, комментарий';
@@ -119,6 +134,7 @@ create trigger tasks_set_updated_at
   for each row execute function private.set_updated_at();
 
 -- Проверки задачи, которые нельзя выразить внешним ключом:
+--   * создаёт задачу только постановщик (дублирует RLS, см. ниже — зачем);
 --   * задача создаётся только в статусе «Новая»;
 --   * исполнитель — сотрудник с ролью «Исполнитель» (не постановщик и не случайный uuid);
 --   * объект существует и не удалён.
@@ -130,8 +146,18 @@ security definer
 set search_path = ''
 as $$
 begin
-  if tg_op = 'INSERT' and new.status <> 'new' then
-    raise exception 'Задача создаётся только в статусе «Новая»';
+  if tg_op = 'INSERT' then
+    -- Триггер срабатывает раньше RLS-проверки вставки. Чтобы по разным текстам ошибок
+    -- исполнитель не мог узнать, существует ли чужой объект или сотрудник с таким id,
+    -- вставку не от постановщика отклоняем сразу, до любых поисков.
+    -- (private.is_manager() объявлена в миграции 2/3; вызов разрешается при выполнении.)
+    if (select auth.uid()) is not null and not private.is_manager() then
+      raise exception 'Создавать задачи может только постановщик' using errcode = '42501';
+    end if;
+
+    if new.status <> 'new' then
+      raise exception 'Задача создаётся только в статусе «Новая»';
+    end if;
   end if;
 
   if tg_op = 'INSERT' or new.assignee_id is distinct from old.assignee_id then
@@ -144,10 +170,16 @@ begin
   end if;
 
   if tg_op = 'INSERT' or new.object_id is distinct from old.object_id then
-    if not exists (
-      select 1 from public.objects o
-      where o.id = new.object_id and o.deleted_at is null
-    ) then
+    -- FOR SHARE: если параллельно выполняется delete_object(), ждём её завершения
+    -- и видим, что объект удалён. Без блокировки задача могла бы «проскочить»
+    -- в удаляемый объект и остаться видимой.
+    perform 1
+    from public.objects o
+    where o.id = new.object_id
+      and o.deleted_at is null
+    for share;
+
+    if not found then
       raise exception 'Объект не найден или удалён';
     end if;
   end if;

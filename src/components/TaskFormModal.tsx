@@ -1,8 +1,10 @@
 import { App, Form, Input, Modal, Select } from 'antd'
+import { useRef } from 'react'
 import { useObjects } from '../api/objects.ts'
 import { useExecutors } from '../api/profiles.ts'
 import { useSaveTask, type TaskInput } from '../api/tasks.ts'
 import { errorMessage } from '../lib/errors.ts'
+import { requiredText } from '../lib/formRules.ts'
 
 type Props = {
   /** Если передана — редактирование, иначе создание. */
@@ -19,8 +21,12 @@ export function TaskFormModal({ task, defaultObjectId, onClose, onSaved }: Props
   const objects = useObjects()
   const executors = useExecutors()
   const { message } = App.useApp()
+  // Повторное нажатие во время сохранения не должно создать вторую задачу.
+  const inFlight = useRef(false)
 
   const submit = async (values: TaskInput) => {
+    if (inFlight.current) return
+    inFlight.current = true
     try {
       const saved = await save.mutateAsync({
         id: task?.id,
@@ -36,6 +42,8 @@ export function TaskFormModal({ task, defaultObjectId, onClose, onSaved }: Props
       onClose()
     } catch (error) {
       message.error(errorMessage(error))
+    } finally {
+      inFlight.current = false
     }
   }
 
@@ -65,11 +73,7 @@ export function TaskFormModal({ task, defaultObjectId, onClose, onSaved }: Props
         }
         onFinish={submit}
       >
-        <Form.Item
-          name="title"
-          label="Название"
-          rules={[{ required: true, whitespace: true, message: 'Укажите название задачи' }]}
-        >
+        <Form.Item name="title" label="Название" rules={requiredText('Укажите название задачи')}>
           <Input maxLength={200} placeholder="Монтаж опалубки 3 этажа" autoFocus />
         </Form.Item>
         <Form.Item name="description" label="Описание">

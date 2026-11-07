@@ -20,12 +20,21 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   }
 
   if (auth.profileError) {
+    // Например, сервер отверг сохранённую сессию: обновление страницы тут не поможет,
+    // поэтому даём и повторить, и выйти.
     return (
       <Result
         status="error"
         title="Не удалось загрузить профиль"
         subTitle={errorMessage(auth.profileError)}
-        extra={<Button onClick={() => window.location.reload()}>Обновить страницу</Button>}
+        extra={[
+          <Button key="reload" onClick={() => window.location.reload()}>
+            Обновить страницу
+          </Button>,
+          <Button key="logout" type="primary" onClick={() => void auth.signOut()}>
+            Выйти
+          </Button>,
+        ]}
       />
     )
   }

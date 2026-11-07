@@ -1,6 +1,8 @@
 import { App, Form, Input, Modal } from 'antd'
+import { useRef } from 'react'
 import { useSaveObject, type ObjectInput } from '../api/objects.ts'
 import { errorMessage } from '../lib/errors.ts'
+import { requiredText } from '../lib/formRules.ts'
 
 type Props = {
   /** Если передан — редактирование, иначе создание. */
@@ -13,8 +15,12 @@ export function ObjectFormModal({ object, onClose, onSaved }: Props) {
   const [form] = Form.useForm<ObjectInput>()
   const save = useSaveObject()
   const { message } = App.useApp()
+  // Повторный Enter во время сохранения не должен создать второй объект.
+  const inFlight = useRef(false)
 
   const submit = async (values: ObjectInput) => {
+    if (inFlight.current) return
+    inFlight.current = true
     try {
       const saved = await save.mutateAsync({
         id: object?.id,
@@ -25,6 +31,8 @@ export function ObjectFormModal({ object, onClose, onSaved }: Props) {
       onClose()
     } catch (error) {
       message.error(errorMessage(error))
+    } finally {
+      inFlight.current = false
     }
   }
 
@@ -44,18 +52,10 @@ export function ObjectFormModal({ object, onClose, onSaved }: Props) {
         initialValues={object ? { name: object.name, address: object.address } : undefined}
         onFinish={submit}
       >
-        <Form.Item
-          name="name"
-          label="Название"
-          rules={[{ required: true, whitespace: true, message: 'Укажите название' }]}
-        >
+        <Form.Item name="name" label="Название" rules={requiredText('Укажите название')}>
           <Input maxLength={200} placeholder="ЖК «Северный парк», корпус 2" autoFocus />
         </Form.Item>
-        <Form.Item
-          name="address"
-          label="Адрес"
-          rules={[{ required: true, whitespace: true, message: 'Укажите адрес' }]}
-        >
+        <Form.Item name="address" label="Адрес" rules={requiredText('Укажите адрес')}>
           <Input.TextArea rows={2} maxLength={500} placeholder="г. Москва, ул. Лесная, 12" />
         </Form.Item>
         <button type="submit" hidden />

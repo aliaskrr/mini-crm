@@ -6,6 +6,7 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router'
 import { App } from './App.tsx'
 import { AuthProvider } from './auth/AuthProvider.tsx'
+import { isNetworkError } from './lib/errors.ts'
 import { configError } from './lib/supabase.ts'
 import './index.css'
 
@@ -14,8 +15,7 @@ const queryClient = new QueryClient({
     queries: {
       staleTime: 15_000,
       // Ошибки прав и бизнес-правил повторять бессмысленно — повторяем только сетевые сбои.
-      retry: (failureCount, error) =>
-        failureCount < 2 && error instanceof Error && error.message === 'Failed to fetch',
+      retry: (failureCount, error) => failureCount < 2 && isNetworkError(error),
     },
   },
 })

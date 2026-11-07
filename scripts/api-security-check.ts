@@ -70,7 +70,12 @@ async function main() {
   const ownTask = allTasks.find((task) => task.assignee_id === ivanov.id)
   const ownReviewTask = allTasks.find((task) => task.assignee_id === ivanov.id && task.status === 'review')
   const reviewTask = allTasks.find((task) => task.status === 'review')
-  if (!foreignTask || !ownTask || !ownReviewTask || !reviewTask) throw new Error('Неожиданные демо-данные')
+  const ownObjects = new Set(allTasks.filter((task) => task.assignee_id === ivanov.id).map((task) => task.object_id))
+  const { data: allObjects } = await manager.db.from('objects').select('id')
+  const hiddenObject = allObjects?.find((object) => !ownObjects.has(object.id))
+  if (!foreignTask || !ownTask || !ownReviewTask || !reviewTask || !hiddenObject) {
+    throw new Error('Неожиданные демо-данные — перезапустите npm run seed на чистой базе')
+  }
 
   console.log('— Без входа (только публичный ключ) —')
   const anon = client()
@@ -146,6 +151,19 @@ async function main() {
     denied((await ivanov.db.from('task_status_history').delete().eq('task_id', ownTask.id)).error),
   )
   await check('не удаляет задачу', async () => denied((await ivanov.db.from('tasks').delete().eq('id', ownTask.id)).error))
+  await check('по тексту отказа не узнать, существует ли чужой объект и исполнитель', async () => {
+    const existing = await ivanov.db
+      .from('tasks')
+      .insert({ object_id: hiddenObject.id, title: 'x', assignee_id: foreignTask.assignee_id })
+    const random = await ivanov.db
+      .from('tasks')
+      .insert({ object_id: randomUUID(), title: 'x', assignee_id: randomUUID() })
+    const same = existing.error !== null && existing.error.message === random.error?.message
+    return {
+      ok: same,
+      detail: `существующие id: «${existing.error?.message}»; случайные: «${random.error?.message}»`,
+    }
+  })
   await check('не выдаёт себе роль постановщика в profiles', async () =>
     denied((await ivanov.db.from('profiles').update({ role: 'manager' }).eq('id', ivanov.id)).error),
   )
@@ -185,6 +203,17 @@ async function main() {
   )
   await check('«На доработку» без комментария не проходит', async () =>
     denied((await manager.db.rpc('change_task_status', { p_task_id: reviewTask.id, p_to_status: 'rework' })).error),
+  )
+  await check('«На доработку» с «пустым» комментарием (переводы строк, невидимые символы) не проходит', async () =>
+    denied(
+      (
+        await manager.db.rpc('change_task_status', {
+          p_task_id: reviewTask.id,
+          p_to_status: 'rework',
+          p_comment: String.fromCharCode(0x0a, 0x09, 0xa0, 0x200b),
+        })
+      ).error,
+    ),
   )
   await check('нельзя перепрыгнуть статус (Новая → Принята)', async () => {
     const newTask = allTasks.find((task) => task.status === 'new')!

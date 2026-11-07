@@ -48,17 +48,19 @@ export function ObjectsPage() {
         }
       />
 
-      {objects.error && <QueryError error={objects.error} onRetry={() => void objects.refetch()} />}
-
-      <Table
-        rowKey="id"
-        columns={columns}
-        dataSource={objects.data}
-        loading={objects.isPending}
-        pagination={false}
-        scroll={{ x: 'max-content' }}
-        locale={{ emptyText: isManager ? 'Объектов пока нет' : 'Вам пока не назначено ни одной задачи' }}
-      />
+      {objects.error ? (
+        <QueryError error={objects.error} onRetry={() => void objects.refetch()} />
+      ) : (
+        <Table
+          rowKey="id"
+          columns={columns}
+          dataSource={objects.data}
+          loading={objects.isPending}
+          pagination={false}
+          scroll={{ x: 'max-content' }}
+          locale={{ emptyText: isManager ? 'Объектов пока нет' : 'Вам пока не назначено ни одной задачи' }}
+        />
+      )}
 
       {creating && (
         <ObjectFormModal onClose={() => setCreating(false)} onSaved={(id) => navigate(`/objects/${id}`)} />

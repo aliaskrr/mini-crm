@@ -74,7 +74,10 @@ $$;
 -- -----------------------------------------------------------------------------
 
 -- Статус меняется только внутри change_task_status(). Это второй рубеж после GRANT:
--- он срабатывает для любой роли, включая service_role и администратора в SQL-редакторе.
+-- он срабатывает при любом прямом UPDATE статуса, от кого бы тот ни пришёл.
+-- Флаг app.task_status_change через API выставить нельзя (PostgREST не даёт клиенту задавать
+-- произвольные настройки сессии). Администратор БД с прямым SQL-доступом обойти его может —
+-- как и любую проверку внутри базы; это вне модели угроз «через API».
 create function private.tasks_guard_status()
 returns trigger
 language plpgsql
@@ -113,9 +116,10 @@ create trigger tasks_log_creation
   after insert on public.tasks
   for each row execute function private.tasks_log_creation();
 
--- История только дописывается: UPDATE, DELETE и TRUNCATE запрещены всем,
--- включая владельца таблицы (обойти можно только явным отключением триггера — это DDL,
--- через API недоступно).
+-- История только дописывается: UPDATE, DELETE и TRUNCATE отклоняются при любом обращении,
+-- включая владельца таблицы. Через API у ролей и так нет прав на запись в историю;
+-- триггер — второй рубеж от ошибок в коде и случайных правок. Выключить его может только
+-- администратор БД с прямым SQL-доступом.
 create function private.forbid_history_changes()
 returns trigger
 language plpgsql
@@ -167,12 +171,24 @@ set search_path = ''
 as $$
 declare
   v_user_id uuid := (select auth.uid());
-  v_comment text := nullif(btrim(p_comment), '');
+  -- Комментарий без видимых символов (пробелы, переводы строк, невидимые символы Юникода)
+  -- считается отсутствующим; у настоящего комментария обрезаем пробелы и переводы строк по краям.
+  v_comment text := case
+    when private.has_visible_text(p_comment) then btrim(p_comment, E' \t\r\n')
+  end;
   v_task    public.tasks;
   v_rule    private.task_transitions;
 begin
   if v_user_id is null then
     raise exception 'Нужно войти в систему' using errcode = '42501';
+  end if;
+
+  if p_to_status is null then
+    raise exception 'Не указан новый статус';
+  end if;
+
+  if char_length(v_comment) > 2000 then
+    raise exception 'Комментарий длиннее 2000 символов';
   end if;
 
   -- FOR UPDATE блокирует строку до конца транзакции: два одновременных запроса
@@ -296,8 +312,11 @@ revoke all on all functions in schema private from public;
 -- Нужны роли authenticated для вычисления RLS-политик и get_available_transitions().
 -- Вызвать их напрямую через API нельзя: схема private не опубликована.
 grant usage on schema private to authenticated;
+grant execute on function private.my_role() to authenticated;
 grant execute on function private.is_manager() to authenticated;
 grant execute on function private.allowed_transitions(public.tasks) to authenticated;
+-- Используется в CHECK-ограничениях таблиц, поэтому нужна всем, кто пишет в них через API.
+grant execute on function private.has_visible_text(text) to authenticated, service_role;
 
 revoke all on function public.get_available_transitions(uuid) from public, anon;
 revoke all on function public.change_task_status(uuid, public.task_status, text) from public, anon;

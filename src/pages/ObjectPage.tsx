@@ -14,18 +14,22 @@ import { TaskFormModal } from '../components/TaskFormModal.tsx'
 import { TaskSummary } from '../components/TaskSummary.tsx'
 import { TaskTable } from '../components/TaskTable.tsx'
 import { errorMessage } from '../lib/errors.ts'
+import { isUuid } from '../lib/text.ts'
 
 export function ObjectPage() {
   const { objectId } = useParams()
   const { isManager } = useAuth()
-  const object = useObject(objectId)
-  const tasks = useTasks({ objectId })
+  // Заведомо неверный id из адреса (обрезанная ссылка) в базу не отправляем.
+  const validId = isUuid(objectId) ? objectId : undefined
+  const object = useObject(validId)
+  const tasks = useTasks({ objectId: validId }, Boolean(validId))
   const deleteObject = useDeleteObject()
   const navigate = useNavigate()
   const { message } = App.useApp()
   const [editing, setEditing] = useState(false)
   const [creatingTask, setCreatingTask] = useState(false)
 
+  if (!validId) return <NotFound title="Объект не найден" subTitle="Проверьте ссылку." />
   if (object.isPending) return <FullPageSpin />
   if (object.error) return <QueryError error={object.error} onRetry={() => void object.refetch()} />
   if (!object.data) {
@@ -94,14 +98,19 @@ export function ObjectPage() {
         }
         styles={{ body: { padding: 0 } }}
       >
-        {tasks.error && <QueryError error={tasks.error} onRetry={() => void tasks.refetch()} />}
-        <TaskTable
-          tasks={tasks.data}
-          loading={tasks.isPending}
-          showObject={false}
-          showAssignee={isManager}
-          emptyText="На объекте пока нет задач"
-        />
+        {tasks.error ? (
+          <div style={{ padding: 16 }}>
+            <QueryError error={tasks.error} onRetry={() => void tasks.refetch()} />
+          </div>
+        ) : (
+          <TaskTable
+            tasks={tasks.data}
+            loading={tasks.isPending}
+            showObject={false}
+            showAssignee={isManager}
+            emptyText="На объекте пока нет задач"
+          />
+        )}
       </Card>
 
       {editing && <ObjectFormModal object={data} onClose={() => setEditing(false)} />}

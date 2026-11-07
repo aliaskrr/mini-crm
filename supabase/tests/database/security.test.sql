@@ -11,7 +11,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(79);
+select plan(88);
 
 -- -----------------------------------------------------------------------------
 -- Подготовка: тестовые сотрудники, объекты, задачи
@@ -111,9 +111,11 @@ select set_eq($$ select id from public.tasks $$,
 select set_eq($$ select id from public.objects $$,
   $$ values (tests.id('O1')) $$,
   'исполнитель видит только объекты, где у него есть задачи');
-select set_eq($$ select full_name from public.profiles $$,
+select set_eq($$ select full_name from public.profiles where id in (select id from tests.ids) $$,
   $$ values ('Анна (постановщик)'), ('Борис (постановщик)'), ('Иван (исполнитель)') $$,
-  'исполнитель видит себя и постановщиков, но не других исполнителей');
+  'исполнитель видит себя и постановщиков');
+select is_empty($$ select id from public.profiles where role = 'executor' and id <> tests.id('E1') $$,
+  'исполнитель не видит ни одного другого исполнителя');
 select set_eq($$ select distinct task_id from public.task_status_history $$,
   $$ values (tests.id('T1')), (tests.id('T2')) $$,
   'исполнитель видит историю только своих задач');
@@ -132,13 +134,15 @@ reset role;
 -- -----------------------------------------------------------------------------
 select tests.act_as('M1');
 
-select set_eq($$ select id from public.tasks $$,
+-- Проверки ограничены тестовыми записями: в базе могут быть и демо-данные из сида.
+select set_eq($$ select id from public.tasks where id in (select id from tests.ids) $$,
   $$ values (tests.id('T1')), (tests.id('T2')), (tests.id('T3')), (tests.id('T4')) $$,
   'постановщик видит все задачи');
-select set_eq($$ select id from public.objects $$,
+select set_eq($$ select id from public.objects where id in (select id from tests.ids) $$,
   $$ values (tests.id('O1')), (tests.id('O2')), (tests.id('O3')) $$,
   'постановщик видит все объекты');
-select results_eq($$ select count(*)::int from public.profiles $$, $$ values (4) $$,
+select results_eq($$ select count(*)::int from public.profiles where id in (select id from tests.ids) $$,
+  $$ values (4) $$,
   'постановщик видит всех сотрудников');
 select is_empty($$ select * from public.get_available_transitions(tests.id('T1')) $$,
   'постановщик не может взять задачу в работу за исполнителя');
@@ -152,6 +156,7 @@ select tests.act_as('NP');
 
 select is_empty($$ select * from public.tasks $$, 'без роли: задач не видно');
 select is_empty($$ select * from public.objects $$, 'без роли: объектов не видно');
+select is_empty($$ select * from public.profiles $$, 'без роли: сотрудников не видно');
 select throws_ok($$ insert into public.objects (name, address) values ('x', 'y') $$, '42501', null,
   'без роли: создать объект нельзя');
 
@@ -170,6 +175,16 @@ select throws_ok(
   $$ insert into public.tasks (object_id, title, assignee_id) values (tests.id('O1'), 'Взлом', tests.id('E1')) $$,
   '42501', null,
   'исполнитель не может создать задачу');
+-- Ответ одинаков для существующих чужих id и для случайных: по ошибке нельзя узнать,
+-- есть ли такой объект или исполнитель.
+select throws_ok(
+  $$ insert into public.tasks (object_id, title, assignee_id) values (tests.id('O2'), 'x', tests.id('E2')) $$,
+  '42501', 'Создавать задачи может только постановщик',
+  'попытка вставки с чужим объектом и чужим исполнителем — общий отказ');
+select throws_ok(
+  $$ insert into public.tasks (object_id, title, assignee_id) values (gen_random_uuid(), 'x', gen_random_uuid()) $$,
+  '42501', 'Создавать задачи может только постановщик',
+  'попытка вставки с несуществующими id — тот же отказ');
 select is_empty($$ update public.tasks set title = 'Взлом' where id = tests.id('T1') returning id $$,
   'исполнитель не может менять поля даже своей задачи');
 select throws_ok($$ update public.tasks set status = 'accepted' where id = tests.id('T1') $$, '42501', null,
@@ -224,6 +239,10 @@ select throws_ok(
      values (tests.id('T1'), 'accepted', tests.id('M1')) $$,
   '42501', null,
   'постановщик тоже не пишет в историю напрямую');
+select throws_ok(
+  $$ insert into public.tasks (object_id, title, assignee_id) values (tests.id('O1'), U&'\000A\0009\200B', tests.id('E1')) $$,
+  '23514', null,
+  'название из пробелов и невидимых символов не принимается');
 
 select lives_ok(
   $$ insert into public.tasks (object_id, title, description, assignee_id)
@@ -274,7 +293,8 @@ select throws_ok($$ select public.change_task_status(tests.id('T1'), 'accepted')
   'Новая → Принята: запрещено');
 select lives_ok($$ select public.change_task_status(tests.id('T1'), 'in_progress') $$,
   'Новая → В работе: назначенный исполнитель может');
-select lives_ok($$ select public.change_task_status(tests.id('T1'), 'review', 'Готово, фото в чате') $$,
+-- Пробелы и переводы строк по краям комментария обрезаются (см. историю ниже).
+select lives_ok($$ select public.change_task_status(tests.id('T1'), 'review', E'\n  Готово, фото в чате \n') $$,
   'В работе → На проверке: назначенный исполнитель может');
 select throws_ok($$ select public.change_task_status(tests.id('T1'), 'accepted') $$,
   '42501', 'Это действие доступно только постановщику',
@@ -292,6 +312,12 @@ select throws_ok($$ select public.change_task_status(tests.id('T1'), 'rework') $
 select throws_ok($$ select public.change_task_status(tests.id('T1'), 'rework', '   ') $$,
   'P0001', 'Для перевода в статус «На доработке» нужен комментарий',
   'На проверке → На доработке: комментарий из пробелов не считается');
+select throws_ok($$ select public.change_task_status(tests.id('T1'), 'rework', E'\n\t\r\n') $$,
+  'P0001', 'Для перевода в статус «На доработке» нужен комментарий',
+  'На проверке → На доработке: переводы строк и табуляции — тоже не комментарий');
+select throws_ok($$ select public.change_task_status(tests.id('T1'), 'rework', U&'\00A0\200B\FEFF') $$,
+  'P0001', 'Для перевода в статус «На доработке» нужен комментарий',
+  'На проверке → На доработке: неразрывные и невидимые символы Юникода — тоже не комментарий');
 select lives_ok($$ select public.change_task_status(tests.id('T1'), 'rework', 'Переделать армирование') $$,
   'На проверке → На доработке: постановщик с комментарием может');
 reset role;
@@ -354,22 +380,25 @@ select lives_ok($$ select public.change_task_status(tests.id('T3'), 'in_progress
 reset role;
 
 -- -----------------------------------------------------------------------------
--- 9. Защита истории и статуса даже от администратора и service_role
+-- 9. Второй рубеж: триггеры и внешние ключи срабатывают даже для владельца таблиц
+--    (на случай ошибки в коде), а секретный ключ service_role через API может только читать.
+--    Администратор БД с прямым SQL-доступом технически может выключить любую защиту —
+--    это вне модели угроз «через API».
 -- -----------------------------------------------------------------------------
 select throws_ok($$ update public.task_status_history set comment = 'подделка' $$,
   '42501', 'История статусов неизменяема (операция UPDATE запрещена)',
-  'администратор БД не может изменить историю');
+  'триггер: прямой UPDATE истории отклоняется даже от владельца таблицы');
 select throws_ok($$ delete from public.task_status_history $$,
   '42501', 'История статусов неизменяема (операция DELETE запрещена)',
-  'администратор БД не может удалить историю');
+  'триггер: прямой DELETE истории отклоняется даже от владельца таблицы');
 select throws_ok($$ truncate public.task_status_history $$,
   '42501', 'История статусов неизменяема (операция TRUNCATE запрещена)',
-  'администратор БД не может очистить историю');
+  'триггер: TRUNCATE истории отклоняется даже от владельца таблицы');
 select throws_ok($$ update public.tasks set status = 'new' where id = tests.id('T1') $$,
   '42501', 'Статус задачи меняется только через change_task_status()',
-  'администратор БД не может сменить статус в обход функции');
+  'триггер: прямой UPDATE статуса отклоняется даже от владельца таблицы');
 select throws_ok($$ delete from public.tasks where id = tests.id('T2') $$, '23503', null,
-  'задачу с историей нельзя физически удалить даже администратору');
+  'внешний ключ: задачу с историей нельзя физически удалить');
 
 select tests.act_as_service_role();
 select throws_ok(
@@ -378,8 +407,16 @@ select throws_ok(
   '42501', null,
   'service_role не может дописать историю');
 select throws_ok($$ update public.tasks set status = 'new' where id = tests.id('T1') $$,
-  '42501', 'Статус задачи меняется только через change_task_status()',
+  '42501', null,
   'service_role не может сменить статус в обход функции');
+select throws_ok(
+  $$ insert into public.tasks (object_id, title, assignee_id, author_id)
+     values (tests.id('O1'), 'x', tests.id('E1'), tests.id('E2')) $$,
+  '42501', null,
+  'service_role не может создать задачу (и запись о создании от чужого имени)');
+select throws_ok($$ delete from public.objects where id = tests.id('O3') $$,
+  '42501', null,
+  'service_role не может физически удалить объект');
 reset role;
 
 -- -----------------------------------------------------------------------------

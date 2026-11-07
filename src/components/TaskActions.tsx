@@ -1,14 +1,12 @@
 import { CheckOutlined, PlayCircleOutlined, RollbackOutlined, SendOutlined } from '@ant-design/icons'
-import { App, Button, Flex, Form, Input, Modal, Skeleton, Space, Typography } from 'antd'
-import { useState, type ReactNode } from 'react'
-import { useChangeTaskStatus, useAvailableTransitions } from '../api/tasks.ts'
+import { App, Button, Flex, Form, Input, Modal, Space, Typography } from 'antd'
+import { useRef, useState, type ReactNode } from 'react'
+import { useChangeTaskStatus, type Transition } from '../api/tasks.ts'
 import { useAuth } from '../auth/AuthContext.ts'
 import { errorMessage } from '../lib/errors.ts'
+import { requiredText } from '../lib/formRules.ts'
 import { ACTION_LABEL, STATUS_LABEL, type TaskStatus } from '../lib/labels.ts'
-import { QueryError } from './QueryError.tsx'
 import { StatusTag } from './StatusTag.tsx'
-
-type Transition = { to_status: TaskStatus; comment_required: boolean }
 
 const ACTION_ICON: Partial<Record<TaskStatus, ReactNode>> = {
   in_progress: <PlayCircleOutlined />,
@@ -17,28 +15,28 @@ const ACTION_ICON: Partial<Record<TaskStatus, ReactNode>> = {
   rework: <RollbackOutlined />,
 }
 
+type Props = {
+  /** transitions — действия, которые база разрешает текущему пользователю (get_available_transitions). */
+  task: { id: string; status: TaskStatus; transitions: Transition[] }
+}
+
 /**
- * Кнопки смены статуса. Список доступных действий приходит из базы
- * (get_available_transitions), поэтому интерфейс показывает ровно то,
- * что база разрешит сделать текущему пользователю в текущем статусе.
+ * Кнопки смены статуса — ровно те, что разрешит база.
+ * Компонент монтируется заново при каждой смене статуса (key в TaskPage),
+ * поэтому открытый диалог не «переживёт» изменение статуса другим сотрудником.
  */
-export function TaskActions({ task }: { task: { id: string; status: TaskStatus } }) {
+export function TaskActions({ task }: Props) {
   const { isManager } = useAuth()
-  const transitions = useAvailableTransitions(task.id, task.status)
   const [selected, setSelected] = useState<Transition | null>(null)
 
-  if (transitions.isPending) return <Skeleton.Button active />
-  if (transitions.error) {
-    return <QueryError error={transitions.error} onRetry={() => void transitions.refetch()} />
-  }
-  if (transitions.data.length === 0) {
+  if (task.transitions.length === 0) {
     return <Typography.Text type="secondary">{idleHint(task.status, isManager)}</Typography.Text>
   }
 
   return (
     <>
       <Space wrap>
-        {transitions.data.map((transition) => (
+        {task.transitions.map((transition) => (
           <Button
             key={transition.to_status}
             type={transition.to_status === 'rework' ? 'default' : 'primary'}
@@ -74,14 +72,21 @@ function StatusChangeModal({ task, transition, onClose }: ModalProps) {
   const [form] = Form.useForm<{ comment?: string }>()
   const change = useChangeTaskStatus()
   const { message } = App.useApp()
+  const inFlight = useRef(false)
 
   const submit = async ({ comment }: { comment?: string }) => {
+    if (inFlight.current) return
+    inFlight.current = true
     try {
       await change.mutateAsync({ taskId: task.id, toStatus: transition.to_status, comment })
       message.success(`Статус изменён: «${STATUS_LABEL[transition.to_status]}»`)
       onClose()
     } catch (error) {
+      // Диалог остаётся открытым (например, при сбое сети комментарий не потеряется).
+      // Если статус тем временем сменил кто-то другой, карточка обновится и диалог закроется сам.
       message.error(errorMessage(error))
+    } finally {
+      inFlight.current = false
     }
   }
 
@@ -107,9 +112,7 @@ function StatusChangeModal({ task, transition, onClose }: ModalProps) {
           label={transition.comment_required ? 'Что нужно доработать' : 'Комментарий'}
           extra={transition.comment_required ? 'Обязательно для возврата на доработку' : 'Необязательно'}
           rules={
-            transition.comment_required
-              ? [{ required: true, whitespace: true, message: 'Напишите комментарий для исполнителя' }]
-              : []
+            transition.comment_required ? requiredText('Напишите комментарий для исполнителя') : []
           }
         >
           <Input.TextArea rows={4} maxLength={2000} showCount autoFocus />

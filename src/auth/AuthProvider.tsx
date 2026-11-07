@@ -45,7 +45,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = useCallback(async () => {
     setSignedOutByUser(true)
-    await supabase.auth.signOut()
+    // scope 'local': выходим только на этом устройстве. Сессия удаляется из браузера
+    // ещё до запроса к серверу, поэтому выход срабатывает и без сети, а другие
+    // сеансы этого же сотрудника (телефон, второй компьютер) не обрываются.
+    await supabase.auth.signOut({ scope: 'local' })
   }, [])
 
   const value = useMemo<AuthContextValue>(() => {

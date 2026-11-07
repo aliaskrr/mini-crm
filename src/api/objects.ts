@@ -49,7 +49,8 @@ export function useSaveObject() {
       if (error) throw error
       return data
     },
-    onSuccess: invalidateAll,
+    // И после ошибки: если объект тем временем удалили, страница это покажет.
+    onSettled: () => invalidateAll(),
   })
 }
 
@@ -60,6 +61,6 @@ export function useDeleteObject() {
       const { error } = await supabase.rpc('delete_object', { p_object_id: objectId })
       if (error) throw error
     },
-    onSuccess: invalidateAll,
+    onSuccess: (_data, objectId) => invalidateAll({ except: objectId }),
   })
 }

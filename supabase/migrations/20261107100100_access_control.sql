@@ -16,8 +16,21 @@
 -- Вспомогательная функция для политик
 -- -----------------------------------------------------------------------------
 
--- Является ли текущий пользователь постановщиком.
+-- Роль текущего пользователя; null — профиля (а значит, и роли) нет.
 -- security definer — чтобы читать profiles в обход RLS и не уйти в рекурсию политик.
+create function private.my_role()
+returns public.user_role
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select p.role
+  from public.profiles p
+  where p.id = (select auth.uid());
+$$;
+
+-- Является ли текущий пользователь постановщиком.
 create function private.is_manager()
 returns boolean
 language sql
@@ -25,12 +38,7 @@ stable
 security definer
 set search_path = ''
 as $$
-  select exists (
-    select 1
-    from public.profiles p
-    where p.id = (select auth.uid())
-      and p.role = 'manager'
-  );
+  select coalesce(private.my_role() = 'manager', false);
 $$;
 
 -- -----------------------------------------------------------------------------
@@ -66,8 +74,23 @@ grant insert (object_id, title, description, assignee_id),
 -- История: только чтение. Пишут в неё только функции базы.
 grant select on table public.task_status_history to authenticated;
 
--- Даже админский ключ service_role не может дописать, изменить или удалить историю через API.
-revoke insert, update, delete, truncate on table public.task_status_history from service_role;
+-- service_role (секретный ключ) обходит RLS. Оставляем ему только то, что нужно скрипту сида:
+-- заводить профили сотрудников. Объекты, задачи и историю он через API может только читать —
+-- значит, даже с секретным ключом нельзя сменить статус в обход правил, подделать историю
+-- или физически что-то удалить.
+revoke all on table
+  public.profiles,
+  public.objects,
+  public.tasks,
+  public.task_status_history
+from service_role;
+grant select on table
+  public.profiles,
+  public.objects,
+  public.tasks,
+  public.task_status_history
+to service_role;
+grant insert, update on table public.profiles to service_role;
 
 -- -----------------------------------------------------------------------------
 -- RLS: строки
@@ -82,13 +105,14 @@ alter table public.task_status_history enable row level security;
 
 -- ---- profiles ---------------------------------------------------------------
 -- Постановщик видит всех (нужно, чтобы назначать исполнителей).
--- Исполнитель видит себя и постановщиков (авторов задач), но не других исполнителей.
+-- Исполнитель видит себя и постановщиков (авторов задач и проверяющих), но не других исполнителей.
+-- Пользователь без профиля (без роли) не видит никого.
 create policy profiles_select on public.profiles
   for select to authenticated
   using (
     id = (select auth.uid())
-    or role = 'manager'
     or (select private.is_manager())
+    or (role = 'manager' and (select private.my_role()) = 'executor')
   );
 
 -- ---- objects ----------------------------------------------------------------

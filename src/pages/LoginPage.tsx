@@ -52,6 +52,8 @@ export function LoginPage() {
           <Form.Item
             name="email"
             label="Email"
+            // Пробелы по краям (частые при копировании доступов из сообщения) убираем до проверки.
+            normalize={(value?: string) => value?.trim()}
             rules={[{ required: true, type: 'email', message: 'Введите корректный email' }]}
           >
             <Input prefix={<MailOutlined />} autoComplete="username" autoFocus />
