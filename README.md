@@ -2,6 +2,8 @@
 
 Тестовое задание: CRM для строительной компании. Постановщик ставит задачи по объектам (стройкам), исполнитель берёт их в работу и отдаёт на проверку, постановщик принимает или возвращает на доработку. Все права доступа и переходы статусов проверяет сама база данных, поэтому они работают и при обращении к Supabase в обход интерфейса.
 
+**Демо:** https://mini-crm-black.vercel.app. Фронтенд на Vercel, Supabase (Postgres, Auth, REST API) работает на собственном сервере в Docker (см. [«Развёртывание»](#развёртывание)). Доступы — в разделе [«Демо-доступы»](#демо-доступы).
+
 **Стек:** React 19 + TypeScript, Vite, Ant Design, TanStack Query, React Router · Supabase (Postgres, Auth, PostgREST).
 
 **Документы для сдачи:**
@@ -22,7 +24,7 @@
 | Исполнитель не читает и не меняет чужие задачи | Политика `tasks_select` отдаёт исполнителю только строки с `assignee_id = auth.uid()`. Менять поля задач может только постановщик. Объекты и историю исполнитель видит только в рамках своих задач, а из сотрудников — себя и постановщиков. По тексту ошибки нельзя даже узнать, существует ли чужой объект. |
 | Переходы статусов проверяет база | Единственный путь — функция `change_task_status()`. Она проверяет матрицу `private.task_transitions`, роль и назначение, обязательный комментарий (пробелы и невидимые символы комментарием не считаются) и в той же транзакции пишет историю. Прямой `UPDATE` колонки `status` запрещён правами и триггером — в том числе для секретного ключа `service_role`. |
 | Историю нельзя подделать, изменить или удалить | Пишут в неё только функции базы. У ролей API (`anon`, `authenticated` и даже `service_role`) нет прав на запись в историю. Триггер дополнительно отклоняет `UPDATE/DELETE/TRUNCATE` от владельца таблицы — на случай ошибки в коде. Удаление задачи — пометка, история остаётся. |
-| Открытая регистрация отключена | Локально — `enable_signup = false` в `supabase/config.toml`, в облаке — настройка в Dashboard (см. ниже). Пользователь без роли не видит ничего: ни задач, ни объектов, ни сотрудников. |
+| Открытая регистрация отключена | Локально — `enable_signup = false` в `supabase/config.toml`, на сервере демо — `GOTRUE_DISABLE_SIGNUP` в `deploy/selfhost/docker-compose.yml`, в Supabase Cloud — настройка в Dashboard (см. ниже). Пользователь без роли не видит ничего: ни задач, ни объектов, ни сотрудников. |
 | Секретные ключи не во фронтенде и не в репозитории | Во фронтенд попадают только URL и publishable-ключ (`VITE_*`). Секретный ключ нужен только локальному скрипту сида и берётся из переменной окружения. `.env*` в `.gitignore`. Фронтенд не стартует, если в него по ошибке подставили секретный ключ. Права самого `service_role` урезаны: через API он может только читать данные и заводить профили сотрудников. |
 
 Модель угроз — как в ТЗ: «через API». Администратор базы с прямым SQL-доступом технически может выключить любую защиту внутри Postgres; от этого защищают доступ к самой базе и аудит Supabase, а не код приложения.
@@ -77,7 +79,38 @@ npm run db:test
 npm run test:api
 ```
 
-## Развёртывание: Supabase Cloud + Vercel
+## Развёртывание
+
+### Как развёрнуто демо: свой сервер + Vercel
+
+Supabase запущен на собственном сервере (AWS Lightsail, Debian 12, 2 ГБ) из официальных образов, и только то, что нужно приложению: Postgres 17, Auth (GoTrue) и REST API (PostgREST). Файлы лежат в [`deploy/selfhost/`](deploy/selfhost). Шлюз Kong заменён на Caddy: он даёт HTTPS (Let's Encrypt), CORS и маршруты `/auth/v1`, `/rest/v1`. Порты контейнеров слушают только `127.0.0.1`, так что база снаружи недоступна, а миграции идут через SSH-туннель.
+
+1. На сервере с Docker и Caddy скопируйте `deploy/selfhost` в `/opt/mini-crm` и создайте секреты. Скрипт генерирует пароль Postgres, JWT-секрет, anon- и service_role-ключи и пишет их в `.env` с правами 600:
+   ```bash
+   sudo API_HOST=<домен API> SITE_URL=https://<домен фронтенда> bash /opt/mini-crm/make-env.sh
+   ```
+   ```bash
+   cd /opt/mini-crm && sudo docker compose up -d --wait
+   ```
+2. Подставьте домен API в `deploy/selfhost/Caddyfile`, положите его в `/etc/caddy/conf.d/mini-crm.caddy`, добавьте в `/etc/caddy/Caddyfile` строку `import /etc/caddy/conf.d/*.caddy` и перезагрузите Caddy (`sudo systemctl reload caddy`).
+3. Миграции с рабочей машины. Сначала туннель:
+   ```bash
+   ssh -N -L 15432:127.0.0.1:54322 <user>@<сервер>
+   ```
+   Затем в другом окне (TLS внутри SSH-туннеля не нужен):
+   ```bash
+   npx supabase db push --remote="postgresql://postgres:<POSTGRES_PASSWORD>@127.0.0.1:15432/postgres?sslmode=disable"
+   ```
+4. Тесты pgTAP в базе на сервере:
+   ```bash
+   ssh <user>@<сервер> 'cd /opt/mini-crm && sudo docker compose exec -T db psql -U postgres -X -q -t -A -v ON_ERROR_STOP=1 -f -' < supabase/tests/database/security.test.sql
+   ```
+5. Сид — как в шаге 4 для Supabase Cloud ниже: `VITE_SUPABASE_URL=https://<домен API>`, publishable-ключ — `ANON_KEY`, секретный — `SERVICE_ROLE_KEY` из `.env` на сервере.
+6. Vercel: импорт репозитория, переменные `VITE_SUPABASE_URL` и `VITE_SUPABASE_PUBLISHABLE_KEY` (= `ANON_KEY`), Deploy.
+
+На развёрнутой версии проверено: 88 из 88 тестов pgTAP, 29 из 29 попыток обхода через API (`npm run test:api` с адресом сервера), вход под обеими ролями и полный цикл задачи в интерфейсе.
+
+### Вариант: Supabase Cloud + Vercel
 
 1. Создайте проект на [supabase.com](https://supabase.com) (бесплатного тарифа достаточно).
 2. Примените миграции:
@@ -103,7 +136,7 @@ npm run test:api
    Ключи лежат в Project Settings → API Keys. Legacy anon и service_role ключи тоже подходят.
 5. Vercel → Add New Project → импорт репозитория → Environment Variables: `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` → Deploy. Настройки SPA уже в `vercel.json`. Netlify тоже подойдёт — для него есть `public/_redirects`.
 
-Добавить сотрудника вручную: Dashboard → Authentication → Users → Add user (email, пароль, Auto Confirm User), затем в SQL Editor:
+Добавить сотрудника вручную: Dashboard → Authentication → Users → Add user (email, пароль, Auto Confirm User), затем в SQL Editor (на своём сервере Dashboard нет: пользователя создаёт `POST /auth/v1/admin/users` с service_role-ключом, а SQL выполняется через `docker compose exec db psql -U postgres`):
 
 ```sql
 insert into public.profiles (id, full_name, role)
@@ -114,7 +147,7 @@ where email = 'ivanov@example.com';
 
 ## Демо-доступы
 
-После `npm run seed`. Пароль у всех — значение `SEED_PASSWORD`.
+На демо-сайте https://mini-crm-black.vercel.app заведены эти сотрудники. Локально — после `npm run seed`, пароль у всех — значение `SEED_PASSWORD`.
 
 | Роль | Сотрудник | Email |
 |---|---|---|
@@ -135,6 +168,7 @@ supabase/
     …_task_workflow.sql     матрица переходов, change_task_status(), история, удаление
   tests/database/security.test.sql   pgTAP-тесты
   config.toml               локальный стек (регистрация выключена)
+deploy/selfhost/            Supabase на своём сервере: docker compose, Caddy, генерация ключей
 scripts/
   seed.ts                   демо-данные через настоящий API
   api-security-check.ts     попытки обхода правил через HTTP API

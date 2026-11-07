@@ -1,0 +1,2 @@
+# Files that run on the Linux server keep LF even in a Windows checkout.
+deploy/selfhost/** text eol=lf

@@ -1,0 +1,43 @@
+# The API's public face, in place of Supabase's Kong gateway: HTTPS (Let's Encrypt),
+# CORS, and the two routes the app uses. Install as /etc/caddy/conf.d/mini-crm.caddy and
+# import it from /etc/caddy/Caddyfile:  import /etc/caddy/conf.d/*.caddy
+#
+# Keys are JWTs checked by GoTrue and PostgREST themselves, and RLS decides what each role
+# sees, so the gateway adds no checks of its own. A request without a key acts as `anon`,
+# which has no rights on any table.
+{$CRM_API_HOST} {
+	encode zstd gzip
+
+	# Bearer tokens, no cookies: any origin may call the API, as on supabase.co.
+	header {
+		Access-Control-Allow-Origin "*"
+		Access-Control-Expose-Headers "Content-Range, Content-Location, Preference-Applied, X-Supabase-Api-Version"
+		-Server
+		defer
+	}
+
+	@preflight method OPTIONS
+	handle @preflight {
+		header Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+		header Access-Control-Allow-Headers "{http.request.header.Access-Control-Request-Headers}"
+		header Access-Control-Max-Age "86400"
+		respond 204
+	}
+
+	handle_path /auth/v1/* {
+		reverse_proxy 127.0.0.1:54331 {
+			# GoTrue rate-limits per IP from this header; overwrite whatever the client sent.
+			header_up X-Real-IP {remote_host}
+			# GoTrue adds this; it has no effect next to "*", and the app sends no cookies.
+			header_down -Access-Control-Allow-Credentials
+		}
+	}
+
+	handle_path /rest/v1/* {
+		reverse_proxy 127.0.0.1:54330
+	}
+
+	handle {
+		respond 404
+	}
+}

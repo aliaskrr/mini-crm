@@ -23,3 +23,6 @@ dist-ssr
 # Playwright / скриншоты для отладки
 test-results
 playwright-report
+
+# Привязка к проекту Vercel (vercel link)
+.vercel
